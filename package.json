@@ -1,0 +1,15 @@
+{
+  "name": "doc2pages",
+  "version": "1.0.0",
+  "description": "Document to scanned pages converter",
+  "type": "module",
+  "bin": {
+    "doc2pages": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
