@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { exec, getCommandVersion, batchExec } from './exec';
+import { getImageDimensions } from './image-dimensions';
 import type { RenderOptions, PageInfo, PageError, Toolchain } from '../types';
 
 interface PdfRenderResult {
@@ -9,23 +10,55 @@ interface PdfRenderResult {
   toolchain: Toolchain;
 }
 
-async function getPdfPageCount(pdfPath: string): Promise<number> {
-  const result = await exec(['pdfinfo', pdfPath]);
-  const match = result.stdout.match(/Pages:\s*(\d+)/);
-  if (!match) {
-    throw new Error('Could not determine PDF page count');
-  }
-  return parseInt(match[1], 10);
+interface PdfInfo {
+  pageCount: number;
+  /** Page dimensions in points (from pdfinfo "Page size" line), or null if not available */
+  pageSizePts: { width: number; height: number } | null;
 }
 
-async function getImageDimensions(imagePath: string): Promise<{ width: number; height: number }> {
-  const result = await exec(['identify', '-format', '%w %h', imagePath]);
-  if (result.exitCode !== 0) {
-    // Fallback: try to read with Bun
-    return { width: 0, height: 0 };
+async function getPdfInfo(pdfPath: string): Promise<PdfInfo> {
+  const result = await exec(['pdfinfo', pdfPath]);
+  const pagesMatch = result.stdout.match(/Pages:\s*(\d+)/);
+  if (!pagesMatch) {
+    throw new Error('Could not determine PDF page count');
   }
-  const [width, height] = result.stdout.trim().split(' ').map(Number);
-  return { width: width || 0, height: height || 0 };
+  const pageCount = parseInt(pagesMatch[1], 10);
+
+  // Try to parse "Page size: W x H pts"
+  let pageSizePts: PdfInfo['pageSizePts'] = null;
+  const sizeMatch = result.stdout.match(/Page size:\s*([\d.]+)\s*x\s*([\d.]+)\s*pts/);
+  if (sizeMatch) {
+    pageSizePts = {
+      width: parseFloat(sizeMatch[1]),
+      height: parseFloat(sizeMatch[2]),
+    };
+  }
+
+  return { pageCount, pageSizePts };
+}
+
+/** Convert PDF points to pixels at given DPI (matches pdftoppm rounding). */
+function ptsToPixels(pts: number, dpi: number): number {
+  return Math.ceil(pts * dpi / 72);
+}
+
+interface PageChunk {
+  first: number;
+  last: number;
+}
+
+function chunkPages(pageCount: number, concurrency: number): PageChunk[] {
+  const numChunks = Math.min(concurrency, pageCount);
+  const baseSize = Math.floor(pageCount / numChunks);
+  const remainder = pageCount % numChunks;
+  const chunks: PageChunk[] = [];
+  let start = 1;
+  for (let i = 0; i < numChunks; i++) {
+    const size = baseSize + (i < remainder ? 1 : 0);
+    chunks.push({ first: start, last: start + size - 1 });
+    start += size;
+  }
+  return chunks;
 }
 
 async function renderPageRange(
@@ -71,19 +104,28 @@ export async function renderPdf(
   const pagesDir = join(outputDir, 'pages');
   await mkdir(pagesDir, { recursive: true });
 
-  const pageCount = await getPdfPageCount(pdfPath);
-  const version = await getCommandVersion('pdftoppm');
+  const [pdfInfo, version] = await Promise.all([
+    getPdfInfo(pdfPath),
+    getCommandVersion('pdftoppm'),
+  ]);
+  const { pageCount, pageSizePts } = pdfInfo;
   const toolchain: Toolchain = { renderer: 'pdftoppm', version };
 
-  // For simplicity, render all pages in one go (pdftoppm handles it efficiently)
-  // Could split into batches for very large PDFs
-  const { success, failed } = await renderPageRange(
-    pdfPath,
-    pagesDir,
-    1,
-    pageCount,
-    options
+  // Split rendering into parallel page-range chunks
+  const chunks = chunkPages(pageCount, options.concurrency);
+  const chunkResults = await batchExec(
+    chunks,
+    (chunk) => renderPageRange(pdfPath, pagesDir, chunk.first, chunk.last, options),
+    chunks.length
   );
+
+  // Merge results from all chunks
+  const allSuccess: number[] = [];
+  const allFailed: number[] = [];
+  for (const { success, failed } of chunkResults) {
+    allSuccess.push(...success);
+    allFailed.push(...failed);
+  }
 
   const errors: PageError[] = [];
 
@@ -91,7 +133,7 @@ export async function renderPdf(
   const pageFiles: { index: number; file: string; path: string }[] = [];
 
   for (let i = 1; i <= pageCount; i++) {
-    if (failed.includes(i)) {
+    if (allFailed.includes(i)) {
       errors.push({ index: i, error: 'render failed' });
       continue;
     }
@@ -101,31 +143,70 @@ export async function renderPdf(
     pageFiles.push({ index: i, file: outputFile, path: fullPath });
   }
 
-  // Parallelize identify calls using batchExec
-  const dimensionResults = await batchExec(
-    pageFiles,
-    async (pageFile) => {
-      try {
-        const dims = await getImageDimensions(pageFile.path);
-        return { success: true as const, pageFile, dims };
-      } catch {
-        return { success: false as const, pageFile };
-      }
-    },
-    options.concurrency
-  );
+  // Determine dimensions — try pdfinfo prediction first, then fall back to file reads
+  let predictedDims: { width: number; height: number } | null = null;
+  if (pageSizePts && pageFiles.length >= 2) {
+    const predicted = {
+      width: ptsToPixels(pageSizePts.width, options.dpi),
+      height: ptsToPixels(pageSizePts.height, options.dpi),
+    };
+
+    // Spot-check first and last rendered pages against prediction
+    const firstFile = pageFiles[0];
+    const lastFile = pageFiles[pageFiles.length - 1];
+    const [firstDims, lastDims] = await Promise.all([
+      getImageDimensions(firstFile.path),
+      getImageDimensions(lastFile.path),
+    ]);
+
+    if (
+      firstDims.width === predicted.width &&
+      firstDims.height === predicted.height &&
+      lastDims.width === predicted.width &&
+      lastDims.height === predicted.height
+    ) {
+      predictedDims = predicted;
+    }
+  }
 
   const pages: PageInfo[] = [];
-  for (const result of dimensionResults) {
-    if (result.success) {
+
+  if (predictedDims) {
+    // Uniform-size PDF: use predicted dimensions for all pages (skip per-file reads)
+    for (const pf of pageFiles) {
       pages.push({
-        index: result.pageFile.index,
-        file: result.pageFile.file,
-        width: result.dims.width,
-        height: result.dims.height,
+        index: pf.index,
+        file: pf.file,
+        width: predictedDims.width,
+        height: predictedDims.height,
       });
-    } else {
-      errors.push({ index: result.pageFile.index, error: 'failed to read output' });
+    }
+  } else {
+    // Mixed-size or single-page PDF: read dimensions from each file
+    const dimensionResults = await batchExec(
+      pageFiles,
+      async (pageFile) => {
+        try {
+          const dims = await getImageDimensions(pageFile.path);
+          return { success: true as const, pageFile, dims };
+        } catch {
+          return { success: false as const, pageFile };
+        }
+      },
+      options.concurrency
+    );
+
+    for (const result of dimensionResults) {
+      if (result.success) {
+        pages.push({
+          index: result.pageFile.index,
+          file: result.pageFile.file,
+          width: result.dims.width,
+          height: result.dims.height,
+        });
+      } else {
+        errors.push({ index: result.pageFile.index, error: 'failed to read output' });
+      }
     }
   }
 

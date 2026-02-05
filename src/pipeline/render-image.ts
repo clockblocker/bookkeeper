@@ -1,21 +1,13 @@
 import { join, basename, extname } from 'node:path';
 import { mkdir, copyFile } from 'node:fs/promises';
 import { exec, getCommandVersion, batchExec } from './exec';
+import { getImageDimensions } from './image-dimensions';
 import type { RenderOptions, PageInfo, PageError, Toolchain } from '../types';
 
 interface ImageRenderResult {
   pages: PageInfo[];
   errors: PageError[];
   toolchain: Toolchain;
-}
-
-async function getImageDimensions(imagePath: string): Promise<{ width: number; height: number }> {
-  const result = await exec(['identify', '-format', '%w %h', imagePath]);
-  if (result.exitCode !== 0) {
-    return { width: 0, height: 0 };
-  }
-  const [width, height] = result.stdout.trim().split(' ').map(Number);
-  return { width: width || 0, height: height || 0 };
 }
 
 function formatPageNumber(index: number, total: number): string {
