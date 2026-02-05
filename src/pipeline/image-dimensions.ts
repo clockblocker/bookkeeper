@@ -86,6 +86,39 @@ async function readJpegDimensions(filePath: string): Promise<ImageDimensions | n
 }
 
 /**
+ * Read lossless WebP (VP8L) dimensions from the binary header.
+ * Layout: RIFF (0-3) + size (4-7) + WEBP (8-11) + VP8L (12-15) + chunk-size (16-19) + signature (20) + packed (21-24)
+ */
+async function readWebpDimensions(filePath: string): Promise<ImageDimensions | null> {
+  let fh;
+  try {
+    fh = await open(filePath, 'r');
+    const buf = Buffer.alloc(25);
+    const { bytesRead } = await fh.read(buf, 0, 25, 0);
+    if (bytesRead < 25) return null;
+
+    // Verify RIFF + WEBP + VP8L signatures
+    if (
+      buf.toString('ascii', 0, 4) !== 'RIFF' ||
+      buf.toString('ascii', 8, 12) !== 'WEBP' ||
+      buf.toString('ascii', 12, 16) !== 'VP8L'
+    ) {
+      return null;
+    }
+
+    // Packed LE uint32 at byte 21: width = low 14 bits + 1, height = next 14 bits + 1
+    const packed = buf.readUInt32LE(21);
+    const width = (packed & 0x3fff) + 1;
+    const height = ((packed >> 14) & 0x3fff) + 1;
+    return { width, height };
+  } catch {
+    return null;
+  } finally {
+    await fh?.close();
+  }
+}
+
+/**
  * Fallback: spawn `identify` to read dimensions for any image format.
  */
 async function readDimensionsViaIdentify(filePath: string): Promise<ImageDimensions> {
@@ -108,6 +141,9 @@ export async function getImageDimensions(filePath: string): Promise<ImageDimensi
     if (dims) return dims;
   } else if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
     const dims = await readJpegDimensions(filePath);
+    if (dims) return dims;
+  } else if (lower.endsWith('.webp')) {
+    const dims = await readWebpDimensions(filePath);
     if (dims) return dims;
   }
 

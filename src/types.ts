@@ -7,7 +7,6 @@ export interface DetectionResult {
 
 export interface RenderOptions {
   dpi: number;
-  format: 'png' | 'jpg';
   concurrency: number;
 }
 

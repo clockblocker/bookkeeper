@@ -30,7 +30,7 @@ export async function renderImages(
   const workItems = imagePaths.map((srcPath, i) => {
     const pageNum = i + 1;
     const paddedNum = formatPageNumber(pageNum, imagePaths.length);
-    const outputFile = `page-${paddedNum}.${options.format}`;
+    const outputFile = `page-${paddedNum}.png`;
     const destPath = join(pagesDir, outputFile);
     return { srcPath, pageNum, outputFile, destPath };
   });
@@ -41,7 +41,7 @@ export async function renderImages(
     async (item) => {
       try {
         const srcExt = extname(item.srcPath).toLowerCase();
-        const needsConvert = srcExt !== `.${options.format}`;
+        const needsConvert = srcExt !== '.png';
 
         if (needsConvert) {
           const result = await exec(['convert', item.srcPath, item.destPath]);

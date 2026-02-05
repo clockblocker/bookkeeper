@@ -69,12 +69,12 @@ async function renderPageRange(
   options: RenderOptions,
   retryCount = 0
 ): Promise<{ success: number[]; failed: number[] }> {
-  const formatFlag = options.format === 'png' ? '-png' : '-jpeg';
   const prefix = join(outputDir, 'page');
 
   const cmd = [
     'pdftoppm',
-    formatFlag,
+    '-png',
+    '-gray',
     '-r', String(options.dpi),
     '-f', String(firstPage),
     '-l', String(lastPage),
@@ -138,7 +138,7 @@ export async function renderPdf(
       continue;
     }
     const paddedNum = String(i).padStart(String(pageCount).length, '0');
-    const outputFile = `page-${paddedNum}.${options.format}`;
+    const outputFile = `page-${paddedNum}.png`;
     const fullPath = join(pagesDir, outputFile);
     pageFiles.push({ index: i, file: outputFile, path: fullPath });
   }

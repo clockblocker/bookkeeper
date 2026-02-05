@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 import { mkdir, access } from 'node:fs/promises';
-import { basename, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { detectInput } from './pipeline/detect';
 import { renderPdf } from './pipeline/render-pdf';
 import { renderImages } from './pipeline/render-image';
 import { createManifest, writeManifest } from './pipeline/manifest';
+import { processPages } from './pipeline/process';
 import type { RenderOptions } from './types';
 
 function printUsage(): void {
@@ -19,14 +20,13 @@ Arguments:
   output  Output directory for pages and manifest
 
 Options:
-  --dpi <number>       Resolution for PDF rendering (default: 300)
-  --format <png|jpg>   Output image format (default: png)
+  --dpi <number>       Resolution for PDF rendering (default: 200)
   --concurrency <n>    Number of parallel processes (default: 20)
   --help               Show this help message
 
 Examples:
-  doc2pages book.pdf ./output --dpi 300
-  doc2pages ./scans ./output --format jpg
+  doc2pages book.pdf ./output --dpi 200
+  doc2pages ./scans ./output
 `);
 }
 
@@ -36,8 +36,7 @@ function parseArgs(args: string[]): {
   options: RenderOptions;
 } | null {
   const positional: string[] = [];
-  let dpi = 300;
-  let format: 'png' | 'jpg' = 'png';
+  let dpi = 200;
   let concurrency = 20;
 
   for (let i = 0; i < args.length; i++) {
@@ -54,13 +53,6 @@ function parseArgs(args: string[]): {
         console.error('Error: DPI must be between 72 and 1200');
         return null;
       }
-    } else if (arg === '--format' && args[i + 1]) {
-      const fmt = args[++i].toLowerCase();
-      if (fmt !== 'png' && fmt !== 'jpg') {
-        console.error('Error: Format must be png or jpg');
-        return null;
-      }
-      format = fmt;
     } else if (arg === '--concurrency' && args[i + 1]) {
       concurrency = parseInt(args[++i], 10);
       if (isNaN(concurrency) || concurrency < 1) {
@@ -84,7 +76,7 @@ function parseArgs(args: string[]): {
   return {
     input: resolve(positional[0]),
     output: resolve(positional[1]),
-    options: { dpi, format, concurrency },
+    options: { dpi, concurrency },
   };
 }
 
@@ -124,7 +116,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`Detected: ${detection.type}`);
-  console.log(`Processing with DPI=${options.dpi}, format=${options.format}`);
+  console.log(`Processing with DPI=${options.dpi}`);
 
   let result;
   let sourceName: string;
@@ -139,13 +131,20 @@ async function main(): Promise<void> {
     result = await renderImages(detection.files, output, options);
   }
 
+  // Process pages (grayscale, contrast, deskew, trim, sharpen, WebP)
+  const pagesDir = join(output, 'pages');
+  console.log(`Processing ${result.pages.length} page(s) through image pipeline...`);
+  const processed = await processPages(pagesDir, result.pages, options.concurrency);
+
+  const allErrors = [...result.errors, ...processed.errors];
+
   // Generate manifest
   const manifest = createManifest({
     source: sourceName,
     dpi: options.dpi,
-    format: options.format,
-    pages: result.pages,
-    errors: result.errors,
+    format: 'webp',
+    pages: processed.pages,
+    errors: allErrors,
     toolchain: result.toolchain,
   });
 
