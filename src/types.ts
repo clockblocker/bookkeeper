@@ -15,6 +15,7 @@ export interface PageInfo {
   file: string;
   width: number;
   height: number;
+  textFile?: string;
 }
 
 export interface PageError {

@@ -6,6 +6,7 @@ import { renderPdf } from './pipeline/render-pdf';
 import { renderImages } from './pipeline/render-image';
 import { createManifest, writeManifest } from './pipeline/manifest';
 import { processPages } from './pipeline/process';
+import { extractPages } from './pipeline/extract';
 import type { RenderOptions } from './types';
 
 function printUsage(): void {
@@ -136,14 +137,27 @@ async function main(): Promise<void> {
   console.log(`Processing ${result.pages.length} page(s) through image pipeline...`);
   const processed = await processPages(pagesDir, result.pages, options.concurrency);
 
-  const allErrors = [...result.errors, ...processed.errors];
+  // Extract text from pages (if API key is available)
+  let finalPages = processed.pages;
+  let extractionErrors: typeof processed.errors = [];
+
+  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+    console.log(`Extracting text from ${processed.pages.length} page(s) via Gemini...`);
+    const extracted = await extractPages(pagesDir, processed.pages, options.concurrency);
+    finalPages = extracted.pages;
+    extractionErrors = extracted.errors;
+  } else {
+    console.log('Skipping text extraction (GOOGLE_GENERATIVE_AI_API_KEY not set)');
+  }
+
+  const allErrors = [...result.errors, ...processed.errors, ...extractionErrors];
 
   // Generate manifest
   const manifest = createManifest({
     source: sourceName,
     dpi: options.dpi,
     format: 'webp',
-    pages: processed.pages,
+    pages: finalPages,
     errors: allErrors,
     toolchain: result.toolchain,
   });
