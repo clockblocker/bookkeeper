@@ -1,4 +1,4 @@
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import { unlink } from 'node:fs/promises';
 import { exec, batchExec } from './exec';
 import { getImageDimensions } from './image-dimensions';
@@ -13,7 +13,7 @@ export async function processPages(
     inputPages,
     async (page) => {
       const inputPath = join(pagesDir, page.file);
-      const outputFile = basename(page.file, '.png') + '.webp';
+      const outputFile = page.file.replace(/\.png$/, '.webp');
       const outputPath = join(pagesDir, outputFile);
 
       const result = await exec([

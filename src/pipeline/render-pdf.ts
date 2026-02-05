@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rename } from 'node:fs/promises';
 import { exec, getCommandVersion, batchExec } from './exec';
 import { getImageDimensions } from './image-dimensions';
 import type { RenderOptions, PageInfo, PageError, Toolchain } from '../types';
@@ -138,8 +138,13 @@ export async function renderPdf(
       continue;
     }
     const paddedNum = String(i).padStart(String(pageCount).length, '0');
-    const outputFile = `page-${paddedNum}.png`;
+    const pageName = `page-${paddedNum}`;
+    const pageSubdir = join(pagesDir, pageName);
+    await mkdir(pageSubdir, { recursive: true });
+    const srcPath = join(pagesDir, `${pageName}.png`);
+    const outputFile = `${pageName}/${pageName}.png`;
     const fullPath = join(pagesDir, outputFile);
+    await rename(srcPath, fullPath);
     pageFiles.push({ index: i, file: outputFile, path: fullPath });
   }
 

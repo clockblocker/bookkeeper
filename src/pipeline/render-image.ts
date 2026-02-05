@@ -30,9 +30,11 @@ export async function renderImages(
   const workItems = imagePaths.map((srcPath, i) => {
     const pageNum = i + 1;
     const paddedNum = formatPageNumber(pageNum, imagePaths.length);
-    const outputFile = `page-${paddedNum}.png`;
+    const pageName = `page-${paddedNum}`;
+    const outputFile = `${pageName}/${pageName}.png`;
     const destPath = join(pagesDir, outputFile);
-    return { srcPath, pageNum, outputFile, destPath };
+    const destDir = join(pagesDir, pageName);
+    return { srcPath, pageNum, outputFile, destPath, destDir };
   });
 
   // Process images in parallel batches
@@ -40,6 +42,7 @@ export async function renderImages(
     workItems,
     async (item) => {
       try {
+        await mkdir(item.destDir, { recursive: true });
         const srcExt = extname(item.srcPath).toLowerCase();
         const needsConvert = srcExt !== '.png';
 

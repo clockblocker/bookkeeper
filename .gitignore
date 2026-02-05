@@ -18,5 +18,8 @@ env/
 .vscode/
 *.swp
 
+# Secrets
+.env
+
 # OS
 .DS_Store
