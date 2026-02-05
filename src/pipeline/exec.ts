@@ -19,13 +19,15 @@ export async function exec(
     stderr: 'pipe',
   });
 
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
   const timeoutPromise = timeout > 0
-    ? new Promise<never>((_, reject) =>
-        setTimeout(() => {
+    ? new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
           proc.kill();
           reject(new Error(`Command timed out after ${timeout}ms`));
-        }, timeout)
-      )
+        }, timeout);
+      })
     : null;
 
   const resultPromise = (async () => {
@@ -35,10 +37,14 @@ export async function exec(
     return { stdout, stderr, exitCode };
   })();
 
-  if (timeoutPromise) {
-    return Promise.race([resultPromise, timeoutPromise]);
+  try {
+    if (timeoutPromise) {
+      return await Promise.race([resultPromise, timeoutPromise]);
+    }
+    return await resultPromise;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
-  return resultPromise;
 }
 
 export async function execOrThrow(
@@ -57,30 +63,19 @@ export async function batchExec<T, R>(
   fn: (item: T) => Promise<R>,
   concurrency: number
 ): Promise<R[]> {
-  const results: R[] = [];
-  const executing: Promise<void>[] = [];
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
 
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    const promise = fn(item).then((result) => {
-      results[i] = result;
-    });
-
-    executing.push(promise);
-
-    if (executing.length >= concurrency) {
-      await Promise.race(executing);
-      const idx = executing.findIndex((p) =>
-        p.then(() => true).catch(() => true)
-      );
-      if (idx !== -1) {
-        await executing[idx];
-        executing.splice(idx, 1);
-      }
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await fn(items[index]);
     }
   }
 
-  await Promise.all(executing);
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
   return results;
 }
 

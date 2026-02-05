@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { exec, getCommandVersion } from './exec';
+import { exec, getCommandVersion, batchExec } from './exec';
 import type { RenderOptions, PageInfo, PageError, Toolchain } from '../types';
 
 interface PdfRenderResult {
@@ -85,30 +85,47 @@ export async function renderPdf(
     options
   );
 
-  const pages: PageInfo[] = [];
   const errors: PageError[] = [];
+
+  // Build list of page info for successful pages
+  const pageFiles: { index: number; file: string; path: string }[] = [];
 
   for (let i = 1; i <= pageCount; i++) {
     if (failed.includes(i)) {
       errors.push({ index: i, error: 'render failed' });
       continue;
     }
-
-    // pdftoppm outputs page-01.png, page-02.png, etc.
     const paddedNum = String(i).padStart(String(pageCount).length, '0');
     const outputFile = `page-${paddedNum}.${options.format}`;
     const fullPath = join(pagesDir, outputFile);
+    pageFiles.push({ index: i, file: outputFile, path: fullPath });
+  }
 
-    try {
-      const dims = await getImageDimensions(fullPath);
+  // Parallelize identify calls using batchExec
+  const dimensionResults = await batchExec(
+    pageFiles,
+    async (pageFile) => {
+      try {
+        const dims = await getImageDimensions(pageFile.path);
+        return { success: true as const, pageFile, dims };
+      } catch {
+        return { success: false as const, pageFile };
+      }
+    },
+    options.concurrency
+  );
+
+  const pages: PageInfo[] = [];
+  for (const result of dimensionResults) {
+    if (result.success) {
       pages.push({
-        index: i,
-        file: outputFile,
-        width: dims.width,
-        height: dims.height,
+        index: result.pageFile.index,
+        file: result.pageFile.file,
+        width: result.dims.width,
+        height: result.dims.height,
       });
-    } catch {
-      errors.push({ index: i, error: 'failed to read output' });
+    } else {
+      errors.push({ index: result.pageFile.index, error: 'failed to read output' });
     }
   }
 

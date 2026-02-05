@@ -1,6 +1,6 @@
 import { join, basename, extname } from 'node:path';
 import { mkdir, copyFile } from 'node:fs/promises';
-import { exec, getCommandVersion } from './exec';
+import { exec, getCommandVersion, batchExec } from './exec';
 import type { RenderOptions, PageInfo, PageError, Toolchain } from '../types';
 
 interface ImageRenderResult {
@@ -31,44 +31,66 @@ export async function renderImages(
   const pagesDir = join(outputDir, 'pages');
   await mkdir(pagesDir, { recursive: true });
 
-  const pages: PageInfo[] = [];
-  const errors: PageError[] = [];
   const version = await getCommandVersion('convert');
   const toolchain: Toolchain = { renderer: 'imagemagick', version };
 
-  for (let i = 0; i < imagePaths.length; i++) {
-    const srcPath = imagePaths[i];
+  // Prepare work items with pre-computed paths
+  const workItems = imagePaths.map((srcPath, i) => {
     const pageNum = i + 1;
     const paddedNum = formatPageNumber(pageNum, imagePaths.length);
     const outputFile = `page-${paddedNum}.${options.format}`;
     const destPath = join(pagesDir, outputFile);
+    return { srcPath, pageNum, outputFile, destPath };
+  });
 
-    try {
-      const srcExt = extname(srcPath).toLowerCase();
-      const needsConvert = srcExt !== `.${options.format}`;
+  // Process images in parallel batches
+  const results = await batchExec(
+    workItems,
+    async (item) => {
+      try {
+        const srcExt = extname(item.srcPath).toLowerCase();
+        const needsConvert = srcExt !== `.${options.format}`;
 
-      if (needsConvert) {
-        // Use ImageMagick to convert
-        const result = await exec(['convert', srcPath, destPath]);
-        if (result.exitCode !== 0) {
-          throw new Error(result.stderr);
+        if (needsConvert) {
+          const result = await exec(['convert', item.srcPath, item.destPath]);
+          if (result.exitCode !== 0) {
+            throw new Error(result.stderr);
+          }
+        } else {
+          await copyFile(item.srcPath, item.destPath);
         }
-      } else {
-        await copyFile(srcPath, destPath);
-      }
 
-      const dims = await getImageDimensions(destPath);
-      pages.push({
-        index: pageNum,
-        file: outputFile,
-        width: dims.width,
-        height: dims.height,
-      });
-    } catch (err) {
-      errors.push({
-        index: pageNum,
-        error: err instanceof Error ? err.message : 'unknown error',
-      });
+        const dims = await getImageDimensions(item.destPath);
+        return {
+          success: true as const,
+          page: {
+            index: item.pageNum,
+            file: item.outputFile,
+            width: dims.width,
+            height: dims.height,
+          },
+        };
+      } catch (err) {
+        return {
+          success: false as const,
+          error: {
+            index: item.pageNum,
+            error: err instanceof Error ? err.message : 'unknown error',
+          },
+        };
+      }
+    },
+    options.concurrency
+  );
+
+  const pages: PageInfo[] = [];
+  const errors: PageError[] = [];
+
+  for (const result of results) {
+    if (result.success) {
+      pages.push(result.page);
+    } else {
+      errors.push(result.error);
     }
   }
 
