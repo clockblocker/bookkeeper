@@ -179,7 +179,7 @@ async function extractPage(
       const text = await extractRegionText(cropBuffer);
       mdParts.push(text);
       // clean up temporary text crop
-      await Bun.file(cropPath).unlink();
+      try { await Bun.file(cropPath).unlink(); } catch { /* best-effort cleanup */ }
     }
   }
 
@@ -228,7 +228,6 @@ export async function extractPages(
     if (result.success) {
       pages_.push(result.page);
     } else {
-      pages_.push(result.page);
       errors.push(result.error);
     }
   }

@@ -124,10 +124,13 @@ async function readWebpDimensions(filePath: string): Promise<ImageDimensions | n
 async function readDimensionsViaIdentify(filePath: string): Promise<ImageDimensions> {
   const result = await exec(['identify', '-format', '%w %h', filePath]);
   if (result.exitCode !== 0) {
-    return { width: 0, height: 0 };
+    throw new Error(`identify failed for ${filePath}: ${result.stderr}`);
   }
   const [width, height] = result.stdout.trim().split(' ').map(Number);
-  return { width: width || 0, height: height || 0 };
+  if (!width || !height) {
+    throw new Error(`identify returned invalid dimensions for ${filePath}: ${result.stdout}`);
+  }
+  return { width, height };
 }
 
 /**
